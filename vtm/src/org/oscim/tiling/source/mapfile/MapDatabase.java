@@ -1,6 +1,6 @@
 /*
  * Copyright 2010, 2011, 2012 mapsforge.org
- * Copyright 2013 Hannes Janetzek
+ * Copyright 2013, 2014 Hannes Janetzek
  *
  * This file is part of the OpenScienceMap project (http://www.opensciencemap.org).
  *
@@ -17,13 +17,14 @@
  */
 package org.oscim.tiling.source.mapfile;
 
+import static org.oscim.core.GeometryBuffer.GeometryType.LINE;
+import static org.oscim.core.GeometryBuffer.GeometryType.POLY;
 import static org.oscim.tiling.ITileDataSink.QueryResult.FAILED;
 import static org.oscim.tiling.ITileDataSink.QueryResult.SUCCESS;
 
 import java.io.IOException;
 import java.io.RandomAccessFile;
 
-import org.oscim.core.GeometryBuffer;
 import org.oscim.core.GeometryBuffer.GeometryType;
 import org.oscim.core.MapElement;
 import org.oscim.core.MercatorProjection;
@@ -140,10 +141,31 @@ public class MapDatabase implements ITileDataSource {
 
 	private final MapElement mElem = new MapElement();
 
-	private int minLat, minLon;
-	private Tile mTile;
+	private int minDeltaLat, minDeltaLon;
+
+	private final TileProjection mTileProjection;
+	private final TileClipper mTileClipper;
 
 	private final MapFileTileSource mTileSource;
+
+	public MapDatabase(MapFileTileSource tileSource) throws IOException {
+		mTileSource = tileSource;
+		try {
+			/* open the file in read only mode */
+			mInputFile = new RandomAccessFile(tileSource.mapFile, "r");
+			mFileSize = mInputFile.length();
+			mReadBuffer = new ReadBuffer(mInputFile);
+
+		} catch (IOException e) {
+			log.error(e.getMessage());
+			/* make sure that the file is closed */
+			dispose();
+			throw new IOException();
+		}
+
+		mTileProjection = new TileProjection();
+		mTileClipper = new TileClipper(0, 0, 0, 0);
+	}
 
 	@Override
 	public void query(MapTile tile, ITileDataSink sink) {
@@ -157,28 +179,29 @@ public class MapDatabase implements ITileDataSource {
 			mIntBuffer = new int[MAXIMUM_WAY_NODES_SEQUENCE_LENGTH * 2];
 
 		try {
-			mTile = tile;
+			mTileProjection.setTile(tile);
+			//mTile = tile;
 
-			// size of tile in map coordinates;
+			/* size of tile in map coordinates; */
 			double size = 1.0 / (1 << tile.zoomLevel);
 
-			// simplification tolerance
+			/* simplification tolerance */
 			int pixel = (tile.zoomLevel > 11) ? 1 : 2;
 
 			int simplify = Tile.SIZE / pixel;
 
-			// translate screen pixel for tile to latitude and longitude
-			// tolerance for point reduction before projection.
-			minLat = (int) (Math.abs(MercatorProjection.toLatitude(tile.y + size)
+			/* translate screen pixel for tile to latitude and longitude
+			 * tolerance for point reduction before projection. */
+			minDeltaLat = (int) (Math.abs(MercatorProjection.toLatitude(tile.y + size)
 			        - MercatorProjection.toLatitude(tile.y)) * 1e6) / simplify;
-			minLon = (int) (Math.abs(MercatorProjection.toLongitude(tile.x + size)
+			minDeltaLon = (int) (Math.abs(MercatorProjection.toLongitude(tile.x + size)
 			        - MercatorProjection.toLongitude(tile.x)) * 1e6) / simplify;
 
 			QueryParameters queryParameters = new QueryParameters();
 			queryParameters.queryZoomLevel =
 			        mTileSource.fileHeader.getQueryZoomLevel(tile.zoomLevel);
 
-			// get and check the sub-file for the query zoom level
+			/* get and check the sub-file for the query zoom level */
 			SubFileParameter subFileParameter =
 			        mTileSource.fileHeader.getSubFileParameter(queryParameters.queryZoomLevel);
 
@@ -200,22 +223,6 @@ public class MapDatabase implements ITileDataSource {
 		}
 
 		sink.completed(SUCCESS);
-	}
-
-	public MapDatabase(MapFileTileSource tileSource) throws IOException {
-		mTileSource = tileSource;
-		try {
-			// open the file in read only mode
-			mInputFile = new RandomAccessFile(tileSource.mapFile, "r");
-			mFileSize = mInputFile.length();
-			mReadBuffer = new ReadBuffer(mInputFile);
-
-		} catch (IOException e) {
-			log.error(e.getMessage());
-			// make sure that the file is closed
-			dispose();
-			throw new IOException();
-		}
 	}
 
 	@Override
@@ -272,7 +279,7 @@ public class MapDatabase implements ITileDataSource {
 		int poisOnQueryZoomLevel = zoomTable[zoomTableRow][0];
 		int waysOnQueryZoomLevel = zoomTable[zoomTableRow][1];
 
-		// get the relative offset to the first stored way in the block
+		/* get the relative offset to the first stored way in the block */
 		int firstWayOffset = mReadBuffer.readUnsignedInt();
 		if (firstWayOffset < 0) {
 			log.warn(INVALID_FIRST_WAY_OFFSET + firstWayOffset);
@@ -282,7 +289,7 @@ public class MapDatabase implements ITileDataSource {
 			return;
 		}
 
-		// add the current buffer position to the relative first way offset
+		/* add the current buffer position to the relative first way offset */
 		firstWayOffset += mReadBuffer.getBufferPosition();
 		if (firstWayOffset > mReadBuffer.getBufferSize()) {
 			log.warn(INVALID_FIRST_WAY_OFFSET + firstWayOffset);
@@ -296,7 +303,7 @@ public class MapDatabase implements ITileDataSource {
 			return;
 		}
 
-		// finished reading POIs, check if the current buffer position is valid
+		/* finished reading POIs, check if the current buffer position is valid */
 		if (mReadBuffer.getBufferPosition() > firstWayOffset) {
 			log.warn("invalid buffer position: " + mReadBuffer.getBufferPosition());
 			if (mDebugFile) {
@@ -305,7 +312,7 @@ public class MapDatabase implements ITileDataSource {
 			return;
 		}
 
-		// move the pointer to the first way
+		/* move the pointer to the first way */
 		mReadBuffer.setBufferPosition(firstWayOffset);
 
 		if (!processWays(queryParameters, mapDataSink, waysOnQueryZoomLevel)) {
@@ -314,96 +321,134 @@ public class MapDatabase implements ITileDataSource {
 
 	}
 
-	private long mCurrentRow;
-	private long mCurrentCol;
+	//	private long mCurrentRow;
+	//	private long mCurrentCol;
 
-	private void processBlocks(ITileDataSink mapDataSink,
-	        QueryParameters queryParameters,
+	private int xmin, ymin, xmax, ymax;
+
+	private void setTileClipping(QueryParameters queryParameters, long mCurrentRow, long mCurrentCol) {
+		long numRows = queryParameters.toBlockY - queryParameters.fromBlockY;
+		long numCols = queryParameters.toBlockX - queryParameters.fromBlockX;
+
+		//log.debug(numCols + "/" + numRows + " " + mCurrentCol + " " + mCurrentRow);
+		xmin = -16;
+		ymin = -16;
+		xmax = Tile.SIZE + 16;
+		ymax = Tile.SIZE + 16;
+
+		if (numRows > 0) {
+			int w = (int) (Tile.SIZE / (numCols + 1));
+			int h = (int) (Tile.SIZE / (numRows + 1));
+
+			if (mCurrentCol > 0)
+				xmin = (int) (mCurrentCol * w);
+
+			if (mCurrentCol < numCols)
+				xmax = (int) (mCurrentCol * w + w);
+
+			if (mCurrentRow > 0)
+				ymin = (int) (mCurrentRow * h);
+
+			if (mCurrentRow < numRows)
+				ymax = (int) (mCurrentRow * h + h);
+		}
+		mTileClipper.setRect(xmin, ymin, xmax, ymax);
+	}
+
+	private final static Tag mWaterTag = new Tag("natural", "water");
+
+	private void processBlocks(ITileDataSink mapDataSink, QueryParameters queryParams,
 	        SubFileParameter subFileParameter) throws IOException {
-		boolean queryIsWater = true;
-		// boolean queryReadWaterInfo = false;
 
-		// read and process all blocks from top to bottom and from left to right
-		for (long row = queryParameters.fromBlockY; row <= queryParameters.toBlockY; row++) {
-			for (long column = queryParameters.fromBlockX; column <= queryParameters.toBlockX; column++) {
-				mCurrentCol = column - queryParameters.fromBlockX;
-				mCurrentRow = row - queryParameters.fromBlockY;
+		/* read and process all blocks from top to bottom and from left to right */
+		for (long row = queryParams.fromBlockY; row <= queryParams.toBlockY; row++) {
+			for (long column = queryParams.fromBlockX; column <= queryParams.toBlockX; column++) {
+				//mCurrentCol = column - queryParameters.fromBlockX;
+				//mCurrentRow = row - queryParameters.fromBlockY;
 
-				// calculate the actual block number of the needed block in the
-				// file
+				setTileClipping(queryParams,
+				                row - queryParams.fromBlockY,
+				                column - queryParams.fromBlockX);
+
+				/* calculate the actual block number of the needed block in the
+				 * file */
 				long blockNumber = row * subFileParameter.blocksWidth + column;
 
-				// get the current index entry
-				long currentBlockIndexEntry =
-				        mTileSource.databaseIndexCache.getIndexEntry(subFileParameter, blockNumber);
+				/* get the current index entry */
+				long blockIndexEntry = mTileSource.databaseIndexCache.getIndexEntry(subFileParameter,
+				                                                                    blockNumber);
 
-				// check if the current query would still return a water tile
-				if (queryIsWater) {
-					// check the water flag of the current block in its index
-					// entry
-					queryIsWater &= (currentBlockIndexEntry & BITMASK_INDEX_WATER) != 0;
-					// queryReadWaterInfo = true;
+				/* check the water flag of the block in its index entry */
+				if ((blockIndexEntry & BITMASK_INDEX_WATER) != 0) {
+					MapElement e = mElem;
+					e.clear();
+					e.tags.clear();
+					e.tags.add(mWaterTag);
+					e.startPolygon();
+					e.addPoint(xmin, ymin);
+					e.addPoint(xmax, ymin);
+					e.addPoint(xmax, ymax);
+					e.addPoint(xmin, ymax);
+					mapDataSink.process(e);
 				}
 
-				// get and check the current block pointer
-				long currentBlockPointer = currentBlockIndexEntry & BITMASK_INDEX_OFFSET;
-				if (currentBlockPointer < 1
-				        || currentBlockPointer > subFileParameter.subFileSize) {
-					log.warn("invalid current block pointer: " + currentBlockPointer);
+				/* get and check the current block pointer */
+				long blockPointer = blockIndexEntry & BITMASK_INDEX_OFFSET;
+				if (blockPointer < 1 || blockPointer > subFileParameter.subFileSize) {
+					log.warn("invalid current block pointer: " + blockPointer);
 					log.warn("subFileSize: " + subFileParameter.subFileSize);
 					return;
 				}
 
 				long nextBlockPointer;
-				// check if the current block is the last block in the file
+				/* check if the current block is the last block in the file */
 				if (blockNumber + 1 == subFileParameter.numberOfBlocks) {
-					// set the next block pointer to the end of the file
+					/* set the next block pointer to the end of the file */
 					nextBlockPointer = subFileParameter.subFileSize;
 				} else {
-					// get and check the next block pointer
-					nextBlockPointer =
-					        mTileSource.databaseIndexCache.getIndexEntry(subFileParameter,
-					                                                     blockNumber + 1)
-					                & BITMASK_INDEX_OFFSET;
-					if (nextBlockPointer < 1
-					        || nextBlockPointer > subFileParameter.subFileSize) {
+					/* get and check the next block pointer */
+					nextBlockPointer = mTileSource.databaseIndexCache.getIndexEntry(subFileParameter,
+					                                                                blockNumber + 1);
+					nextBlockPointer &= BITMASK_INDEX_OFFSET;
+
+					if (nextBlockPointer < 1 || nextBlockPointer > subFileParameter.subFileSize) {
 						log.warn("invalid next block pointer: " + nextBlockPointer);
 						log.warn("sub-file size: " + subFileParameter.subFileSize);
 						return;
 					}
 				}
 
-				// calculate the size of the current block
-				int currentBlockSize = (int) (nextBlockPointer - currentBlockPointer);
-				if (currentBlockSize < 0) {
+				/* calculate the size of the current block */
+				int blockSize = (int) (nextBlockPointer - blockPointer);
+				if (blockSize < 0) {
 					log.warn("current block size must not be negative: "
-					        + currentBlockSize);
+					        + blockSize);
 					return;
-				} else if (currentBlockSize == 0) {
-					// the current block is empty, continue with the next block
+				} else if (blockSize == 0) {
+					/* the current block is empty, continue with the next block */
 					continue;
-				} else if (currentBlockSize > ReadBuffer.MAXIMUM_BUFFER_SIZE) {
-					// the current block is too large, continue with the next
-					// block
-					log.warn("current block size too large: " + currentBlockSize);
+				} else if (blockSize > ReadBuffer.MAXIMUM_BUFFER_SIZE) {
+					/* the current block is too large, continue with the next
+					 * block */
+					log.warn("current block size too large: " + blockSize);
 					continue;
-				} else if (currentBlockPointer + currentBlockSize > mFileSize) {
+				} else if (blockPointer + blockSize > mFileSize) {
 					log.warn("current block larger than file size: "
-					        + currentBlockSize);
+					        + blockSize);
 					return;
 				}
 
-				// seek to the current block in the map file
-				mInputFile.seek(subFileParameter.startAddress + currentBlockPointer);
+				/* seek to the current block in the map file */
+				mInputFile.seek(subFileParameter.startAddress + blockPointer);
 
-				// read the current block into the buffer
-				if (!mReadBuffer.readFromFile(currentBlockSize)) {
-					// skip the current block
-					log.warn("reading current block has failed: " + currentBlockSize);
+				/* read the current block into the buffer */
+				if (!mReadBuffer.readFromFile(blockSize)) {
+					/* skip the current block */
+					log.warn("reading current block has failed: " + blockSize);
 					return;
 				}
 
-				// calculate the top-left coordinates of the underlying tile
+				/* calculate the top-left coordinates of the underlying tile */
 				double tileLatitudeDeg =
 				        Projection.tileYToLatitude(subFileParameter.boundaryTileTop + row,
 				                                   subFileParameter.baseZoomLevel);
@@ -414,20 +459,9 @@ public class MapDatabase implements ITileDataSource {
 				mTileLatitude = (int) (tileLatitudeDeg * 1E6);
 				mTileLongitude = (int) (tileLongitudeDeg * 1E6);
 
-				processBlock(queryParameters, subFileParameter, mapDataSink);
+				processBlock(queryParams, subFileParameter, mapDataSink);
 			}
 		}
-
-		// the query is finished, was the water flag set for all blocks?
-		// if (queryIsWater && queryReadWaterInfo) {
-		// Tag[] tags = new Tag[1];
-		// tags[0] = TAG_NATURAL_WATER;
-		//
-		// System.arraycopy(WATER_TILE_COORDINATES, 0, mWayNodes,
-		// mWayNodePosition, 8);
-		// mWayNodePosition += 8;
-		// mapDatabaseCallback.renderWaterBackground(tags, wayDataContainer);
-		// }
 	}
 
 	/**
@@ -438,7 +472,7 @@ public class MapDatabase implements ITileDataSource {
 	 */
 	private boolean processBlockSignature() {
 		if (mDebugFile) {
-			// get and check the block signature
+			/* get and check the block signature */
 			mSignatureBlock = mReadBuffer.readUTF8EncodedString(SIGNATURE_LENGTH_BLOCK);
 			if (!mSignatureBlock.startsWith("###TileStart")) {
 				log.warn("invalid block signature: " + mSignatureBlock);
@@ -460,21 +494,13 @@ public class MapDatabase implements ITileDataSource {
 	 */
 	private boolean processPOIs(ITileDataSink mapDataSink, int numberOfPois) {
 		Tag[] poiTags = mTileSource.fileInfo.poiTags;
+		MapElement e = mElem;
+
 		int numTags = 0;
-
-		long x = mTile.tileX * Tile.SIZE;
-		long y = mTile.tileY * Tile.SIZE + Tile.SIZE;
-		long z = Tile.SIZE << mTile.zoomLevel;
-
-		long dx = (x - (z >> 1));
-		long dy = (y - (z >> 1));
-
-		double divx = 180000000.0 / (z >> 1);
-		double divy = z / PIx4;
 
 		for (int elementCounter = numberOfPois; elementCounter != 0; --elementCounter) {
 			if (mDebugFile) {
-				// get and check the POI signature
+				/* get and check the POI signature */
 				mSignaturePoi = mReadBuffer.readUTF8EncodedString(SIGNATURE_LENGTH_POI);
 				if (!mSignaturePoi.startsWith("***POIStart")) {
 					log.warn("invalid POI signature: " + mSignaturePoi);
@@ -483,90 +509,78 @@ public class MapDatabase implements ITileDataSource {
 				}
 			}
 
-			// get the POI latitude offset (VBE-S)
+			/* get the POI latitude offset (VBE-S) */
 			int latitude = mTileLatitude + mReadBuffer.readSignedInt();
-
-			// get the POI longitude offset (VBE-S)
+			/* get the POI longitude offset (VBE-S) */
 			int longitude = mTileLongitude + mReadBuffer.readSignedInt();
 
-			// get the special byte which encodes multiple flags
+			/* get the special byte which encodes multiple flags */
 			byte specialByte = mReadBuffer.readByte();
 
-			// bit 1-4 represent the layer
+			/* bit 1-4 represent the layer */
 			byte layer = (byte) ((specialByte & POI_LAYER_BITMASK) >>> POI_LAYER_SHIFT);
-			// bit 5-8 represent the number of tag IDs
+
+			/* bit 5-8 represent the number of tag IDs */
 			byte numberOfTags = (byte) (specialByte & POI_NUMBER_OF_TAGS_BITMASK);
 
 			if (numberOfTags != 0) {
-				if (!mReadBuffer.readTags(mElem.tags, poiTags, numberOfTags))
+				if (!mReadBuffer.readTags(e.tags, poiTags, numberOfTags))
 					return false;
 
 				numTags = numberOfTags;
 			}
 
-			// reset to common tag position
-			mElem.tags.numTags = numTags;
+			/* reset to common tag position */
+			e.tags.numTags = numTags;
 
-			// get the feature bitmask (1 byte)
+			/* get the feature bitmask (1 byte) */
 			byte featureByte = mReadBuffer.readByte();
 
-			// bit 1-3 enable optional features
-			// check if the POI has a name
+			/* bit 1-3 enable optional features
+			 * check if the POI has a name */
 			if ((featureByte & POI_FEATURE_NAME) != 0) {
 				String str = mReadBuffer.readUTF8EncodedString();
-				mElem.tags.add(new Tag(Tag.KEY_NAME, str, false));
+				e.tags.add(new Tag(Tag.KEY_NAME, str, false));
 			}
 
-			// check if the POI has a house number
+			/* check if the POI has a house number */
 			if ((featureByte & POI_FEATURE_HOUSE_NUMBER) != 0) {
 				// mReadBuffer.getPositionAndSkip();
 				// String str =
 				mReadBuffer.readUTF8EncodedString();
 			}
 
-			// check if the POI has an elevation
+			/* check if the POI has an elevation */
 			if ((featureByte & POI_FEATURE_ELEVATION) != 0) {
 				mReadBuffer.readSignedInt();
 				// mReadBuffer.getPositionAndSkip();// tags.add(new
 				// Tag(Tag.TAG_KEY_ELE,
 				// Integer.toString(mReadBuffer.readSignedInt())));
 			}
+			mTileProjection.projectPoint(latitude, longitude, e);
 
-			float lon = (float) (longitude / divx - dx);
+			e.setLayer(layer);
 
-			double sinLat = Math.sin(latitude * PI180);
-			float lat = Tile.SIZE
-			        - (float) ((Math.log((1.0 + sinLat) / (1.0 - sinLat)) * divy + dy));
-
-			mElem.clear();
-			mElem.setLayer(layer);
-			mElem.startPoints();
-			mElem.addPoint(lon, lat);
-
-			mapDataSink.process(mElem);
+			mapDataSink.process(e);
 		}
 
 		return true;
 	}
 
-	private boolean processWayDataBlock(boolean doubleDeltaEncoding) {
-		// get and check the number of way coordinate blocks (VBE-U)
+	private boolean processWayDataBlock(MapElement e, boolean doubleDeltaEncoding, boolean isLine) {
+		/* get and check the number of way coordinate blocks (VBE-U) */
 		int numBlocks = mReadBuffer.readUnsignedInt();
 		if (numBlocks < 1 || numBlocks > Short.MAX_VALUE) {
 			log.warn("invalid number of way coordinate blocks: " + numBlocks);
 			return false;
 		}
 
-		//short[] wayLengths = new short[numBlocks];
-		int[] wayLengths = mElem.ensureIndexSize(numBlocks, false);
+		int[] wayLengths = e.ensureIndexSize(numBlocks, false);
 		if (wayLengths.length > numBlocks)
 			wayLengths[numBlocks] = -1;
 
-		//mElem.pointPos = 0;
-
-		// read the way coordinate blocks
+		/* read the way coordinate blocks */
 		for (int coordinateBlock = 0; coordinateBlock < numBlocks; ++coordinateBlock) {
-			// get and check the number of way nodes (VBE-U)
 			int numWayNodes = mReadBuffer.readUnsignedInt();
 
 			if (numWayNodes < 2 || numWayNodes > MAXIMUM_WAY_NODES_SEQUENCE_LENGTH) {
@@ -575,33 +589,26 @@ public class MapDatabase implements ITileDataSource {
 				return false;
 			}
 
-			// each way node consists of latitude and longitude
+			/* each way node consists of latitude and longitude */
 			int len = numWayNodes * 2;
 
-			if (doubleDeltaEncoding) {
-				len = decodeWayNodesDoubleDelta(len);
-			} else {
-				len = decodeWayNodesSingleDelta(len);
-			}
-			wayLengths[coordinateBlock] = (short) len;
+			wayLengths[coordinateBlock] = decodeWayNodes(doubleDeltaEncoding,
+			                                             e, len, isLine);;
 		}
 
 		return true;
 	}
 
-	private int decodeWayNodesDoubleDelta(int length) {
+	private int decodeWayNodes(boolean doubleDelta, MapElement e, int length, boolean isLine) {
 		int[] buffer = mIntBuffer;
-
 		mReadBuffer.readSignedInt(buffer, length);
 
-		float[] outBuffer = mElem.ensurePointSize(mElem.pointPos + length, true);
-		int outPos = mElem.pointPos;
+		float[] outBuffer = e.ensurePointSize(e.pointPos + length, true);
+		int outPos = e.pointPos;
 		int lat, lon;
 
-		// get the first way node latitude offset
+		/* first node latitude single-delta offset */
 		int firstLat = lat = mTileLatitude + buffer[0];
-
-		// get the first way node longitude offset
 		int firstLon = lon = mTileLongitude + buffer[1];
 
 		outBuffer[outPos++] = lon;
@@ -612,67 +619,18 @@ public class MapDatabase implements ITileDataSource {
 		int deltaLon = 0;
 
 		for (int pos = 2; pos < length; pos += 2) {
-			deltaLat = buffer[pos] + deltaLat;
-			lat += deltaLat;
-
-			deltaLon = buffer[pos + 1] + deltaLon;
-			lon += deltaLon;
-
-			if (pos == length - 2) {
-				boolean line = (lon != firstLon && lat != firstLat);
-				// this also removes closed ways that are not polygon, 
-				// but how do we know?
-				if (line) {
-					outBuffer[outPos++] = lon;
-					outBuffer[outPos++] = lat;
-					cnt += 2;
-				}
-
-				if (mElem.type == GeometryType.NONE) {
-					mElem.type = line ? GeometryType.LINE : GeometryType.POLY;
-				}
-
-			} else if (deltaLon > minLon || deltaLon < -minLon
-			        || deltaLat > minLat || deltaLat < -minLat) {
-				outBuffer[outPos++] = lon;
-				outBuffer[outPos++] = lat;
-				cnt += 2;
+			if (doubleDelta) {
+				deltaLat = buffer[pos] + deltaLat;
+				deltaLon = buffer[pos + 1] + deltaLon;
+			} else {
+				deltaLat = buffer[pos];
+				deltaLon = buffer[pos + 1];
 			}
-		}
-
-		//mReductionCnt += length - cnt;
-		mElem.pointPos = outPos;
-
-		return cnt;
-	}
-
-	private int decodeWayNodesSingleDelta(int length) {
-		int[] buffer = mIntBuffer;
-		mReadBuffer.readSignedInt(buffer, length);
-
-		float[] outBuffer = mElem.ensurePointSize(mElem.pointPos + length, true);
-		int outPos = mElem.pointPos;
-		int lat, lon;
-
-		// get the first way node latitude single-delta offset
-		int firstLat = lat = mTileLatitude + buffer[0];
-
-		// get the first way node longitude single-delta offset
-		int firstLon = lon = mTileLongitude + buffer[1];
-
-		outBuffer[outPos++] = lon;
-		outBuffer[outPos++] = lat;
-		int cnt = 2;
-
-		for (int pos = 2; pos < length; pos += 2) {
-			int deltaLat = buffer[pos];
 			lat += deltaLat;
-
-			int deltaLon = buffer[pos + 1];
 			lon += deltaLon;
 
 			if (pos == length - 2) {
-				boolean line = (lon != firstLon && lat != firstLat);
+				boolean line = isLine || (lon != firstLon && lat != firstLat);
 
 				if (line) {
 					outBuffer[outPos++] = lon;
@@ -680,19 +638,18 @@ public class MapDatabase implements ITileDataSource {
 					cnt += 2;
 				}
 
-				if (mElem.type == GeometryType.NONE)
-					mElem.type = line ? GeometryType.LINE : GeometryType.POLY;
+				if (e.type == GeometryType.NONE)
+					e.type = line ? LINE : POLY;
 
-			} else if (deltaLon > minLon || deltaLon < -minLon
-			        || deltaLat > minLat || deltaLat < -minLat) {
+			} else if (deltaLon > minDeltaLon || deltaLon < -minDeltaLon
+			        || deltaLat > minDeltaLat || deltaLat < -minDeltaLat) {
 				outBuffer[outPos++] = lon;
 				outBuffer[outPos++] = lat;
 				cnt += 2;
 			}
 		}
 
-		//mReductionCnt += length - cnt;
-		mElem.pointPos = outPos;
+		e.pointPos = outPos;
 
 		return cnt;
 	}
@@ -715,6 +672,8 @@ public class MapDatabase implements ITileDataSource {
 	        ITileDataSink mapDataSink, int numberOfWays) {
 
 		Tag[] wayTags = mTileSource.fileInfo.wayTags;
+		MapElement e = mElem;
+
 		int numTags = 0;
 
 		int wayDataBlocks;
@@ -729,35 +688,7 @@ public class MapDatabase implements ITileDataSource {
 			mReadBuffer.skipBytes(stringsSize);
 		}
 
-		long numRows = queryParameters.toBlockY - queryParameters.fromBlockY;
-		long numCols = queryParameters.toBlockX - queryParameters.fromBlockX;
-
-		//log.debug(numCols + "/" + numRows + " " + mCurrentCol + " " + mCurrentRow);
-		if (numRows > 0) {
-			int xmin = -2;
-			int ymin = -2;
-			int xmax = Tile.SIZE + 2;
-			int ymax = Tile.SIZE + 2;
-
-			int w = (int) (Tile.SIZE / (numCols + 1));
-			int h = (int) (Tile.SIZE / (numRows + 1));
-
-			if (mCurrentCol > 0)
-				xmin = (int) (mCurrentCol * w);
-
-			if (mCurrentCol < numCols)
-				xmax = (int) (mCurrentCol * w + w);
-
-			if (mCurrentRow > 0)
-				ymin = (int) (mCurrentRow * h);
-
-			if (mCurrentRow < numRows)
-				ymax = (int) (mCurrentRow * h + h);
-			//log.debug(xmin + " " + ymin + " " + xmax + " " + ymax);
-			mTileClipper.setRect(xmin, ymin, xmax, ymax);
-		} else {
-			mTileClipper.setRect(-2, -2, Tile.SIZE + 2, Tile.SIZE + 2);
-		}
+		//setTileClipping(queryParameters);
 
 		for (int elementCounter = numberOfWays; elementCounter != 0; --elementCounter) {
 			if (mDebugFile) {
@@ -786,7 +717,7 @@ public class MapDatabase implements ITileDataSource {
 
 					byte numberOfTags =
 					        (byte) (mReadBuffer.readByte() & WAY_NUMBER_OF_TAGS_BITMASK);
-					if (!mReadBuffer.readTags(mElem.tags, wayTags, numberOfTags))
+					if (!mReadBuffer.readTags(e.tags, wayTags, numberOfTags))
 						return false;
 
 					numTags = numberOfTags;
@@ -804,30 +735,30 @@ public class MapDatabase implements ITileDataSource {
 					return false;
 				}
 
-				// ignore the way tile bitmask (2 bytes)
+				/* ignore the way tile bitmask (2 bytes) */
 				mReadBuffer.skipBytes(2);
 			}
 
-			// get the special byte which encodes multiple flags
+			/* get the special byte which encodes multiple flags */
 			byte specialByte = mReadBuffer.readByte();
 
-			// bit 1-4 represent the layer
+			/* bit 1-4 represent the layer */
 			byte layer = (byte) ((specialByte & WAY_LAYER_BITMASK) >>> WAY_LAYER_SHIFT);
-			// bit 5-8 represent the number of tag IDs
+			/* bit 5-8 represent the number of tag IDs */
 			byte numberOfTags = (byte) (specialByte & WAY_NUMBER_OF_TAGS_BITMASK);
 
 			if (numberOfTags != 0) {
 
-				if (!mReadBuffer.readTags(mElem.tags, wayTags, numberOfTags))
+				if (!mReadBuffer.readTags(e.tags, wayTags, numberOfTags))
 					return false;
 
 				numTags = numberOfTags;
 			}
 
-			// get the feature bitmask (1 byte)
+			/* get the feature bitmask (1 byte) */
 			byte featureByte = mReadBuffer.readByte();
 
-			// bit 1-6 enable optional features
+			/* bit 1-6 enable optional features */
 			boolean featureWayDoubleDeltaEncoding =
 			        (featureByte & WAY_FEATURE_DOUBLE_DELTA_ENCODING) != 0;
 
@@ -835,36 +766,36 @@ public class MapDatabase implements ITileDataSource {
 			boolean hasHouseNr = (featureByte & WAY_FEATURE_HOUSE_NUMBER) != 0;
 			boolean hasRef = (featureByte & WAY_FEATURE_REF) != 0;
 
-			mElem.tags.numTags = numTags;
+			e.tags.numTags = numTags;
 
 			if (mTileSource.experimental) {
 				if (hasName) {
 					int textPos = mReadBuffer.readUnsignedInt();
 					String str = mReadBuffer.readUTF8EncodedStringAt(stringOffset + textPos);
-					mElem.tags.add(new Tag(Tag.KEY_NAME, str, false));
+					e.tags.add(new Tag(Tag.KEY_NAME, str, false));
 				}
 				if (hasHouseNr) {
 					int textPos = mReadBuffer.readUnsignedInt();
 					String str = mReadBuffer.readUTF8EncodedStringAt(stringOffset + textPos);
-					mElem.tags.add(new Tag(Tag.KEY_HOUSE_NUMBER, str, false));
+					e.tags.add(new Tag(Tag.KEY_HOUSE_NUMBER, str, false));
 				}
 				if (hasRef) {
 					int textPos = mReadBuffer.readUnsignedInt();
 					String str = mReadBuffer.readUTF8EncodedStringAt(stringOffset + textPos);
-					mElem.tags.add(new Tag(Tag.KEY_REF, str, false));
+					e.tags.add(new Tag(Tag.KEY_REF, str, false));
 				}
 			} else {
 				if (hasName) {
 					String str = mReadBuffer.readUTF8EncodedString();
-					mElem.tags.add(new Tag(Tag.KEY_NAME, str, false));
+					e.tags.add(new Tag(Tag.KEY_NAME, str, false));
 				}
 				if (hasHouseNr) {
 					String str = mReadBuffer.readUTF8EncodedString();
-					mElem.tags.add(new Tag(Tag.KEY_HOUSE_NUMBER, str, false));
+					e.tags.add(new Tag(Tag.KEY_HOUSE_NUMBER, str, false));
 				}
 				if (hasRef) {
 					String str = mReadBuffer.readUTF8EncodedString();
-					mElem.tags.add(new Tag(Tag.KEY_REF, str, false));
+					e.tags.add(new Tag(Tag.KEY_REF, str, false));
 				}
 			}
 			if ((featureByte & WAY_FEATURE_LABEL_POSITION) != 0)
@@ -883,42 +814,50 @@ public class MapDatabase implements ITileDataSource {
 				wayDataBlocks = 1;
 			}
 
-			for (int wayDataBlock = 0; wayDataBlock < wayDataBlocks; wayDataBlock++) {
-				mElem.clear();
+			/* some guessing if feature is a line or a polygon */
+			boolean linearFeature = e.tags.containsKey("highway") ||
+			        e.tags.containsKey("boundary") ||
+			        e.tags.containsKey("railway");
+			if (linearFeature) {
+				Tag areaTag = e.tags.get("area");
+				if (areaTag != null && areaTag.value == Tag.VALUE_YES)
+					linearFeature = false;
+			}
 
-				if (!processWayDataBlock(featureWayDoubleDeltaEncoding))
+			for (int wayDataBlock = 0; wayDataBlock < wayDataBlocks; wayDataBlock++) {
+				e.clear();
+
+				if (!processWayDataBlock(e, featureWayDoubleDeltaEncoding, linearFeature))
 					return false;
 
-				if (mElem.isPoly() && mElem.index[0] < 6) {
-					//mSkipPoly++;
+				/* drop invalid outer ring */
+				if (e.isPoly() && e.index[0] < 6) {
 					continue;
 				}
 
-				projectToTile(mElem);
+				mTileProjection.project(e);
 
-				if (mElem.isPoly()) {
-					if (!mTileClipper.clip(mElem)) {
+				if (!e.tags.containsKey("building"))
+					if (!mTileClipper.clip(e)) {
 						continue;
 					}
-				}
+				e.simplify(1, true);
 
-				mElem.setLayer(layer);
-				mapDataSink.process(mElem);
+				e.setLayer(layer);
+				mapDataSink.process(e);
 			}
 		}
 
 		return true;
 	}
 
-	private final TileClipper mTileClipper = new TileClipper(-2, -2, Tile.SIZE + 2, Tile.SIZE + 2);
-
 	private float[] readOptionalLabelPosition() {
 		float[] labelPosition = new float[2];
 
-		// get the label position latitude offset (VBE-S)
+		/* get the label position latitude offset (VBE-S) */
 		labelPosition[1] = mTileLatitude + mReadBuffer.readSignedInt();
 
-		// get the label position longitude offset (VBE-S)
+		/* get the label position longitude offset (VBE-S) */
 		labelPosition[0] = mTileLongitude + mReadBuffer.readSignedInt();
 
 		return labelPosition;
@@ -960,65 +899,93 @@ public class MapDatabase implements ITileDataSource {
 		return zoomTable;
 	}
 
-	private static final double PI180 = (Math.PI / 180) / 1000000.0;
-	private static final double PIx4 = Math.PI * 4;
+	static class TileProjection {
+		private static final double COORD_SCALE = 1000000.0;
 
-	private boolean projectToTile(GeometryBuffer geom) {
+		long dx, dy;
+		double divx, divy;
 
-		float[] coords = geom.points;
-		int[] indices = geom.index;
+		void setTile(Tile tile) {
+			/* tile position in pixels at tile zoom */
+			long x = tile.tileX * Tile.SIZE;
+			long y = tile.tileY * Tile.SIZE + Tile.SIZE;
 
-		long x = mTile.tileX * Tile.SIZE;
-		long y = mTile.tileY * Tile.SIZE + Tile.SIZE;
-		long z = Tile.SIZE << mTile.zoomLevel;
+			/* size of the map in pixel at tile zoom */
+			long mapExtents = Tile.SIZE << tile.zoomLevel;
 
-		double divx, divy = 0;
-		long dx = (x - (z >> 1));
-		long dy = (y - (z >> 1));
+			/* offset relative to lat/lon == 0 */
+			dx = (x - (mapExtents >> 1));
+			dy = (y - (mapExtents >> 1));
 
-		divx = 180000000.0 / (z >> 1);
-		divy = z / PIx4;
+			/* scales longitude(1e6) to map-pixel */
+			divx = (180.0 * COORD_SCALE) / (mapExtents >> 1);
 
-		for (int pos = 0, outPos = 0, i = 0, m = indices.length; i < m; i++) {
-			int len = indices[i];
-			if (len == 0)
-				continue;
-			if (len < 0)
-				break;
-
-			int cnt = 0;
-			float lat, lon, prevLon = 0, prevLat = 0;
-			int first = outPos;
-
-			for (int end = pos + len; pos < end; pos += 2) {
-
-				lon = (float) ((coords[pos]) / divx - dx);
-				double sinLat = Math.sin(coords[pos + 1] * PI180);
-				lat = (float) (Tile.SIZE - (Math.log((1.0 + sinLat) / (1.0 - sinLat)) * divy + dy));
-
-				if (cnt != 0) {
-					// drop small distance intermediate nodes
-					if (lat == prevLat && lon == prevLon) {
-						//log.debug("drop zero delta ");
-						continue;
-					}
-				}
-				coords[outPos++] = prevLon = lon;
-				coords[outPos++] = prevLat = lat;
-
-				cnt += 2;
-			}
-
-			if (coords[first] == prevLon && coords[first + 1] == prevLat) {
-				//log.debug("drop closed");
-				indices[i] = (short) (cnt - 2);
-				outPos -= 2;
-			}
-			else
-				indices[i] = (short) cnt;
+			/* scale latidute to map-pixel */
+			divy = (Math.PI * 2.0) / (mapExtents >> 1);
 		}
 
-		return true;
-	}
+		public void projectPoint(int lat, int lon, MapElement out) {
+			out.clear();
+			out.startPoints();
+			out.addPoint(projectLon(lon), projectLat(lat));
+		}
 
+		public float projectLat(double lat) {
+			double s = Math.sin(lat * ((Math.PI / 180) / COORD_SCALE));
+			double r = Math.log((1.0 + s) / (1.0 - s));
+
+			return Tile.SIZE - (float) (r / divy + dy);
+		}
+
+		public float projectLon(double lon) {
+			return (float) (lon / divx - dx);
+		}
+
+		void project(MapElement e) {
+
+			float[] coords = e.points;
+			int[] indices = e.index;
+
+			int inPos = 0;
+			int outPos = 0;
+
+			boolean isPoly = e.isPoly();
+
+			for (int idx = 0, m = indices.length; idx < m; idx++) {
+				int len = indices[idx];
+				if (len == 0)
+					continue;
+				if (len < 0)
+					break;
+
+				float lat, lon, pLon = 0, pLat = 0;
+				int cnt = 0, first = outPos;
+
+				for (int end = inPos + len; inPos < end; inPos += 2) {
+					lon = projectLon(coords[inPos]);
+					lat = projectLat(coords[inPos + 1]);
+
+					if (cnt != 0) {
+						/* drop small distance intermediate nodes */
+						if (lat == pLat && lon == pLon) {
+							//log.debug("drop zero delta ");
+							continue;
+						}
+					}
+					coords[outPos++] = pLon = lon;
+					coords[outPos++] = pLat = lat;
+					cnt += 2;
+				}
+
+				if (isPoly && coords[first] == pLon && coords[first + 1] == pLat) {
+					/* remove identical start/end point */
+					//log.debug("drop closing point {}", e);
+					indices[idx] = (short) (cnt - 2);
+					outPos -= 2;
+				} else {
+					indices[idx] = (short) cnt;
+				}
+			}
+		}
+	}
 }

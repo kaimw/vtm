@@ -12,11 +12,15 @@ import org.oscim.map.Map;
 import org.oscim.renderer.bucket.SymbolBucket;
 import org.oscim.renderer.bucket.SymbolItem;
 import org.oscim.renderer.bucket.TextItem;
+import org.oscim.theme.styles.TextStyle;
 import org.oscim.utils.FastMath;
 import org.oscim.utils.geom.OBB2D;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 public class LabelPlacement {
 	static final boolean dbg = false;
+	static final Logger log = LoggerFactory.getLogger(LabelPlacement.class);
 
 	public final static LabelTileData getLabels(MapTile tile) {
 		return (LabelTileData) tile.getData(LabelLayer.LABEL_DATA);
@@ -52,31 +56,10 @@ public class LabelPlacement {
 	private Label removeLabel(Label l) {
 		Label ret = (Label) l.next;
 		mLabels = (Label) mPool.release(mLabels, l);
-
 		return ret;
 	}
 
 	public void addLabel(Label l) {
-		for (Label o = mLabels; o != null; o = (Label) o.next) {
-			/* find other label with same text style */
-			if (l.text == o.text) {
-				while (o.next != null
-				        /* break if next item uses different text style */
-				        && l.text == o.next.text
-				        /* check same string instance */
-				        && l.string != o.string
-				        /* check same string */
-				        && !l.string.equals(o.string))
-					o = (Label) o.next;
-
-				/* Note: required for 'packing test' in prepare to work */
-				Label.shareText(l, o);
-				/* insert after text of same type or before same string */
-				l.next = o.next;
-				o.next = l;
-				return;
-			}
-		}
 		l.next = mLabels;
 		mLabels = l;
 	}
@@ -291,7 +274,6 @@ public class LabelPlacement {
 		boolean changedTiles = mTileRenderer.getVisibleTiles(mTileSet);
 
 		if (mTileSet.cnt == 0) {
-			//log.debug("no tiles "+ mTileSet.getSerial());
 			return false;
 		}
 
@@ -395,31 +377,27 @@ public class LabelPlacement {
 		/* add way labels */
 		for (int i = 0, n = mTileSet.cnt; i < n; i++) {
 			MapTile t = tiles[i];
-			synchronized (t) {
-				if (!t.state(READY | NEW_DATA))
-					continue;
+			if (!t.state(READY | NEW_DATA))
+				continue;
 
-				float dx = (float) (t.tileX * Tile.SIZE - tileX);
-				float dy = (float) (t.tileY * Tile.SIZE - tileY);
-				dx = flipLongitude(dx, maxx);
+			float dx = (float) (t.tileX * Tile.SIZE - tileX);
+			float dy = (float) (t.tileY * Tile.SIZE - tileY);
+			dx = flipLongitude(dx, maxx);
 
-				l = addWayLabels(t, l, dx, dy, scale);
-			}
+			l = addWayLabels(t, l, dx, dy, scale);
 		}
 
 		/* add caption */
 		for (int i = 0, n = mTileSet.cnt; i < n; i++) {
 			MapTile t = tiles[i];
-			synchronized (t) {
-				if (!t.state(READY | NEW_DATA))
-					continue;
+			if (!t.state(READY | NEW_DATA))
+				continue;
 
-				float dx = (float) (t.tileX * Tile.SIZE - tileX);
-				float dy = (float) (t.tileY * Tile.SIZE - tileY);
-				dx = flipLongitude(dx, maxx);
+			float dx = (float) (t.tileX * Tile.SIZE - tileX);
+			float dy = (float) (t.tileY * Tile.SIZE - tileY);
+			dx = flipLongitude(dx, maxx);
 
-				l = addNodeLabels(t, l, dx, dy, scale, cos, sin);
-			}
+			l = addNodeLabels(t, l, dx, dy, scale, cos, sin);
 		}
 
 		for (Label ti = mLabels; ti != null; ti = (Label) ti.next) {
@@ -451,35 +429,33 @@ public class LabelPlacement {
 		/* add symbol items */
 		for (int i = 0, n = mTileSet.cnt; i < n; i++) {
 			MapTile t = tiles[i];
-			synchronized (t) {
-				if (!t.state(READY | NEW_DATA))
+			if (!t.state(READY | NEW_DATA))
+				continue;
+
+			float dx = (float) (t.tileX * Tile.SIZE - tileX);
+			float dy = (float) (t.tileY * Tile.SIZE - tileY);
+			dx = flipLongitude(dx, maxx);
+
+			LabelTileData ld = getLabels(t);
+			if (ld == null)
+				continue;
+
+			for (SymbolItem ti : ld.symbols) {
+				if (ti.texRegion == null)
 					continue;
 
-				float dx = (float) (t.tileX * Tile.SIZE - tileX);
-				float dy = (float) (t.tileY * Tile.SIZE - tileY);
-				dx = flipLongitude(dx, maxx);
+				int x = (int) ((dx + ti.x) * scale);
+				int y = (int) ((dy + ti.y) * scale);
 
-				LabelTileData ld = getLabels(t);
-				if (ld == null)
+				if (!isVisible(x, y))
 					continue;
 
-				for (SymbolItem ti : ld.symbols) {
-					if (ti.texRegion == null)
-						continue;
-
-					int x = (int) ((dx + ti.x) * scale);
-					int y = (int) ((dy + ti.y) * scale);
-
-					if (!isVisible(x, y))
-						continue;
-
-					SymbolItem s = SymbolItem.pool.get();
-					s.texRegion = ti.texRegion;
-					s.x = x;
-					s.y = y;
-					s.billboard = true;
-					sl.addSymbol(s);
-				}
+				SymbolItem s = SymbolItem.pool.get();
+				s.texRegion = ti.texRegion;
+				s.x = x;
+				s.y = y;
+				s.billboard = true;
+				sl.addSymbol(s);
 			}
 		}
 
@@ -487,7 +463,7 @@ public class LabelPlacement {
 		l = (Label) mPool.release(l);
 
 		/* draw text to bitmaps and create vertices */
-		work.textLayer.labels = mLabels;
+		work.textLayer.labels = groupLabels(mLabels);
 		work.textLayer.prepare();
 		work.textLayer.labels = null;
 
@@ -500,5 +476,44 @@ public class LabelPlacement {
 	public void cleanup() {
 		mLabels = (Label) mPool.releaseAll(mLabels);
 		mTileSet.releaseTiles();
+	}
+
+	/** group labels by string and type */
+	protected Label groupLabels(Label labels) {
+		for (Label cur = labels; cur != null; cur = (Label) cur.next) {
+			/* keep pointer to previous for removal */
+			Label p = cur;
+			TextStyle t = cur.text;
+			float w = cur.width;
+
+			/* iterate through following */
+			for (Label l = (Label) cur.next; l != null; l = (Label) l.next) {
+
+				if (w != l.width || t != l.text || !cur.string.equals(l.string)) {
+					p = l;
+					continue;
+				} else if (cur.next == l) {
+					l.string = cur.string;
+					p = l;
+					continue;
+				}
+				l.string = cur.string;
+
+				/* insert l after cur */
+				Label tmp = (Label) cur.next;
+				cur.next = l;
+
+				/* continue outer loop at l */
+				cur = l;
+
+				/* remove l from previous place */
+				p.next = l.next;
+				l.next = tmp;
+
+				/* continue from previous */
+				l = p;
+			}
+		}
+		return labels;
 	}
 }

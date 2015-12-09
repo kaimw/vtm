@@ -16,11 +16,13 @@
  */
 package org.oscim.renderer.bucket;
 
+import static org.oscim.backend.GLAdapter.gl;
 import static org.oscim.renderer.MapRenderer.COORD_SCALE;
+import static org.oscim.renderer.MapRenderer.MAX_INDICES;
 
 import java.nio.ShortBuffer;
 
-import org.oscim.backend.GL20;
+import org.oscim.backend.GL;
 import org.oscim.renderer.GLShader;
 import org.oscim.renderer.GLState;
 import org.oscim.renderer.GLViewport;
@@ -29,7 +31,7 @@ import org.oscim.renderer.bucket.TextureItem.TexturePool;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-public abstract class TextureBucket extends RenderBucket {
+public class TextureBucket extends RenderBucket {
 
 	static final Logger log = LoggerFactory.getLogger(TextureBucket.class);
 
@@ -46,12 +48,12 @@ public abstract class TextureBucket extends RenderBucket {
 	                                                       TEXTURE_WIDTH,
 	                                                       TEXTURE_HEIGHT);
 
-	protected TextureBucket(int type) {
-		super(type);
+	public TextureBucket(int type) {
+		super(type, false, true);
 	}
 
 	/** holds textures and offset in vbo */
-	protected TextureItem textures;
+	public TextureItem textures;
 
 	/** scale mode */
 	public boolean fixed;
@@ -78,6 +80,7 @@ public abstract class TextureBucket extends RenderBucket {
 		Shader() {
 			if (!create("texture_layer"))
 				return;
+
 			uMV = getUniform("u_mv");
 			uProj = getUniform("u_proj");
 			uScale = getUniform("u_scale");
@@ -96,9 +99,9 @@ public abstract class TextureBucket extends RenderBucket {
 		}
 	}
 
-	public static final class Renderer {
+	static Shader shader;
 
-		private static Shader shader;
+	public static final class Renderer {
 
 		static void init() {
 			shader = new Shader();
@@ -115,45 +118,32 @@ public abstract class TextureBucket extends RenderBucket {
 			shader.useProgram();
 
 			TextureBucket tb = (TextureBucket) b;
-			GL.glUniform1f(shader.uScale, tb.fixed ? 1 / scale : 1);
+			gl.uniform1f(shader.uScale, tb.fixed ? 1 / scale : 1);
 
 			v.proj.setAsUniform(shader.uProj);
 			v.mvp.setAsUniform(shader.uMV);
 
-			MapRenderer.bindQuadIndicesVBO(true);
+			MapRenderer.bindQuadIndicesVBO();
 
 			for (TextureItem t = tb.textures; t != null; t = t.next) {
-				GL.glUniform2f(shader.uTexSize,
-				               1f / (t.width * COORD_SCALE),
-				               1f / (t.height * COORD_SCALE));
+				gl.uniform2f(shader.uTexSize,
+				             1f / (t.width * COORD_SCALE),
+				             1f / (t.height * COORD_SCALE));
 				t.bind();
-				int maxIndices = MapRenderer.maxQuads * INDICES_PER_SPRITE;
 
 				/* draw up to maxVertices in each iteration */
-				for (int i = 0; i < t.indices; i += maxIndices) {
+				for (int i = 0; i < t.indices; i += MAX_INDICES) {
 					/* to.offset * (24(shorts) * 2(short-bytes)
 					 * / 6(indices) == 8) */
 					int off = (t.offset + i) * 8 + tb.vertexOffset;
 
-					GL.glVertexAttribPointer(shader.aPos, 4,
-					                         GL20.GL_SHORT,
-					                         false, 12, off);
-
-					GL.glVertexAttribPointer(shader.aTexCoord, 2,
-					                         GL20.GL_SHORT,
-					                         false, 12, off + 8);
-
 					int numIndices = t.indices - i;
-					if (numIndices > maxIndices)
-						numIndices = maxIndices;
+					if (numIndices > MAX_INDICES)
+						numIndices = MAX_INDICES;
 
-					GL.glDrawElements(GL20.GL_TRIANGLES, numIndices,
-					                  GL20.GL_UNSIGNED_SHORT, 0);
-
+					tb.render(off, numIndices);
 				}
 			}
-
-			MapRenderer.bindQuadIndicesVBO(false);
 
 			return b.next;
 		}
@@ -161,5 +151,16 @@ public abstract class TextureBucket extends RenderBucket {
 
 	public TextureItem getTextures() {
 		return textures;
+	}
+
+	public void render(int offset, int numIndices) {
+		gl.vertexAttribPointer(shader.aPos, 4, GL.SHORT,
+		                       false, 12, offset);
+
+		gl.vertexAttribPointer(shader.aTexCoord, 2, GL.SHORT,
+		                       false, 12, offset + 8);
+
+		gl.drawElements(GL.TRIANGLES, numIndices,
+		                GL.UNSIGNED_SHORT, 0);
 	}
 }

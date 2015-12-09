@@ -44,7 +44,7 @@ import org.oscim.tiling.ITileDataSource;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-public class VectorTileLoader extends TileLoader implements IRenderTheme.Callback {
+public class VectorTileLoader extends TileLoader implements RenderStyle.Callback {
 
 	static final Logger log = LoggerFactory.getLogger(VectorTileLoader.class);
 
@@ -278,7 +278,7 @@ public class VectorTileLoader extends TileLoader implements IRenderTheme.Callbac
 	@Override
 	public void renderArea(AreaStyle area, int level) {
 		/* dont add faded out polygon layers */
-		if (area.fadeScale > 0 && mTile.zoomLevel < area.fadeScale + 1)
+		if (mTile.zoomLevel < area.fadeScale)
 			return;
 
 		int nLevel = mCurBucket + level;

@@ -1,5 +1,5 @@
 #ifdef GLES
-precision mediump float;
+precision highp float;
 #endif
 uniform mat4 u_mvp;
 uniform vec2 u_scale;
@@ -15,7 +15,7 @@ main(){
 $$
 
 #ifdef GLES
-precision mediump float;
+precision highp float;
 #endif
 uniform vec4 u_color;
 uniform sampler2D tex;
@@ -24,5 +24,5 @@ varying vec2 v_st;
 varying vec2 v_st2;
 void
 main(){
-  gl_FragColor = mix(texture2D(tex, v_st), texture2D(tex, v_st2), u_scale.x);
+  gl_FragColor = mix(texture2D(tex, v_st), texture2D(tex, v_st2), u_scale.x) * u_color;
 }

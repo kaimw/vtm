@@ -1,5 +1,6 @@
-#ifndef DESKTOP_QUIRKS
-precision mediump float;
+#ifdef GLES
+// highp is necessary to not loose texture coordinate bits
+precision highp float;
 #endif
 uniform mat4 u_mvp;
 // uniform mat4 u_vp;
@@ -23,8 +24,8 @@ main(){
 }
 $$
 #extension GL_OES_standard_derivatives : enable
-#ifndef DESKTOP_QUIRKS
-precision mediump float;
+#ifdef GLES
+precision highp float;
 #endif
 uniform sampler2D tex;
 uniform float u_mode;

@@ -20,14 +20,15 @@ import static org.oscim.backend.canvas.Color.parseColor;
 
 import org.oscim.backend.canvas.Color;
 import org.oscim.renderer.bucket.TextureItem;
-import org.oscim.theme.IRenderTheme.Callback;
+import org.oscim.utils.FastMath;
 
 /*TODO 
  * - add custom shaders
  * - create distance field per tile?
  */
 public class AreaStyle extends RenderStyle {
-	private static final int OPAQUE = 0xff000000;
+
+	private static final float FADE_START = 0.25f;
 
 	/** Drawing order level */
 	private final int level;
@@ -70,13 +71,13 @@ public class AreaStyle extends RenderStyle {
 		this.strokeWidth = 1;
 	}
 
-	public AreaStyle(AreaBuilder b) {
+	public AreaStyle(AreaBuilder<?> b) {
 		this.level = b.level;
 		this.style = b.style;
 		this.fadeScale = b.fadeScale;
 		this.blendColor = b.blendColor;
 		this.blendScale = b.blendScale;
-		this.color = b.color;
+		this.color = b.fillColor;
 		this.texture = b.texture;
 
 		this.strokeColor = b.strokeColor;
@@ -89,12 +90,12 @@ public class AreaStyle extends RenderStyle {
 	}
 
 	@Override
-	public void renderWay(Callback renderCallback) {
-		renderCallback.renderArea(this, level);
+	public void renderWay(Callback cb) {
+		cb.renderArea(this, level);
 	}
 
 	public boolean hasAlpha(int zoom) {
-		if ((color & OPAQUE) != OPAQUE)
+		if (!Color.isOpaque(color))
 			return true;
 
 		if (texture != null)
@@ -104,7 +105,7 @@ public class AreaStyle extends RenderStyle {
 			return false;
 
 		if (zoom >= blendScale) {
-			if ((blendColor & OPAQUE) != OPAQUE)
+			if (!Color.isOpaque(blendColor))
 				return true;
 		}
 
@@ -114,20 +115,34 @@ public class AreaStyle extends RenderStyle {
 		return false;
 	}
 
-	public static class AreaBuilder implements StyleBuilder {
-		public int level;
-		public String style;
-		public int color;
+	public float getFade(double scale) {
+		if (fadeScale < 0)
+			return 1;
+
+		float f = (float) (scale / (1 << fadeScale)) - 1;
+		return FastMath.clamp(f, FADE_START, 1);
+	}
+
+	public float getBlend(double scale) {
+		if (blendScale < 0)
+			return 0;
+
+		float f = (float) (scale / (1 << blendScale)) - 1;
+		return FastMath.clamp(f, 0, 1);
+	}
+
+	public static class AreaBuilder<T extends AreaBuilder<T>> extends StyleBuilder<T> {
+
 		public int fadeScale;
 		public int blendColor;
 		public int blendScale;
 
-		public int strokeColor;
-		public float strokeWidth;
-
 		public TextureItem texture;
 
-		public AreaBuilder set(AreaStyle area) {
+		public AreaBuilder() {
+		}
+
+		public T set(AreaStyle area) {
 			if (area == null)
 				return reset();
 
@@ -136,82 +151,41 @@ public class AreaStyle extends RenderStyle {
 			this.fadeScale = area.fadeScale;
 			this.blendColor = area.blendColor;
 			this.blendScale = area.blendScale;
-			this.color = area.color;
+			this.fillColor = area.color;
 			this.texture = area.texture;
 			this.strokeColor = area.strokeColor;
 			this.strokeWidth = area.strokeWidth;
 
-			return this;
+			return self();
 		}
 
-		public AreaBuilder style(String name) {
-			this.style = name;
-			return this;
-		}
-
-		public AreaBuilder level(int level) {
-			this.level = level;
-			return this;
-		}
-
-		public AreaBuilder outline(int color, float width) {
-			this.strokeColor = color;
-			this.strokeWidth = width;
-			return this;
-		}
-
-		public AreaBuilder strokeColor(int color) {
-			this.strokeColor = color;
-			return this;
-		}
-
-		public AreaBuilder strokeColor(String color) {
-			this.strokeColor = parseColor(color);
-			return this;
-		}
-
-		public AreaBuilder strokeWidth(float width) {
-			this.strokeWidth = width;
-			return this;
-		}
-
-		public AreaBuilder color(int color) {
-			this.color = color;
-			return this;
-		}
-
-		public AreaBuilder color(String color) {
-			this.color = parseColor(color);
-			return this;
-		}
-
-		public AreaBuilder blendScale(int zoom) {
+		public T blendScale(int zoom) {
 			this.blendScale = zoom;
-			return this;
+			return self();
 		}
 
-		public AreaBuilder blendColor(int color) {
+		public T blendColor(int color) {
 			this.blendColor = color;
-			return this;
+			return self();
 		}
 
-		public AreaBuilder blendColor(String color) {
+		public T blendColor(String color) {
 			this.blendColor = parseColor(color);
-			return this;
+			return self();
 		}
 
-		public AreaBuilder texture(TextureItem texture) {
+		public T texture(TextureItem texture) {
 			this.texture = texture;
-			return this;
+			return self();
 		}
 
-		public AreaBuilder fadeScale(int zoom) {
+		public T fadeScale(int zoom) {
 			this.fadeScale = zoom;
-			return this;
+			return self();
 		}
 
-		public AreaBuilder reset() {
-			color = Color.BLACK;
+		public T reset() {
+			fillColor = Color.WHITE;
 			strokeColor = Color.BLACK;
 			strokeWidth = 0;
 			fadeScale = -1;
@@ -219,11 +193,16 @@ public class AreaStyle extends RenderStyle {
 			blendColor = Color.TRANSPARENT;
 			style = null;
 			texture = null;
-			return this;
+			return self();
 		}
 
 		public AreaStyle build() {
 			return new AreaStyle(this);
 		}
+	}
+
+	@SuppressWarnings("rawtypes")
+	public static AreaBuilder<?> builder() {
+		return new AreaBuilder();
 	}
 }

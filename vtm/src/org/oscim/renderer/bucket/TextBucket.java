@@ -83,8 +83,8 @@ public class TextBucket extends TextureBucket {
 
 	@Override
 	public void prepare() {
-		short numIndices = 0;
-		short offsetIndices = 0;
+		int numIndices = 0;
+		int offsetIndices = 0;
 
 		int advanceY = 0;
 		float x = 0;
@@ -113,7 +113,7 @@ public class TextBucket extends TextureBucket {
 
 				if (y + height > TEXTURE_HEIGHT) {
 					t.offset = offsetIndices;
-					t.indices = (short) (numIndices - offsetIndices);
+					t.indices = (numIndices - offsetIndices);
 					offsetIndices = numIndices;
 
 					t.next = pool.get();
@@ -127,13 +127,9 @@ public class TextBucket extends TextureBucket {
 				}
 			}
 
-			//yy = y + (height - 1) - it.text.fontDescent - mFontPadY;
-			yy = y + height - it.text.fontDescent; // - mFontPadY;
+			yy = y + height - it.text.fontDescent;
 
-			if (it.text.stroke != null)
-				mCanvas.drawText(it.string, x, yy, it.text.stroke);
-
-			mCanvas.drawText(it.string, x, yy, it.text.paint);
+			mCanvas.drawText(it.string, x, yy, it.text.paint, it.text.stroke);
 
 			// FIXME !!!
 			if (width > TEXTURE_WIDTH)
@@ -159,7 +155,7 @@ public class TextBucket extends TextureBucket {
 		}
 
 		t.offset = offsetIndices;
-		t.indices = (short) (numIndices - offsetIndices);
+		t.indices = (numIndices - offsetIndices);
 	}
 
 	protected void addItem(TextItem it,

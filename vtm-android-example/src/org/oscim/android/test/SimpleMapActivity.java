@@ -15,8 +15,10 @@
  * this program. If not, see <http://www.gnu.org/licenses/>.
  */package org.oscim.android.test;
 
+import org.oscim.android.MapScaleBar;
 import org.oscim.core.MapPosition;
 import org.oscim.core.MercatorProjection;
+import org.oscim.layers.tile.buildings.BuildingLayer;
 import org.oscim.layers.tile.vector.labeling.LabelLayer;
 import org.oscim.map.Layers;
 import org.oscim.map.Map;
@@ -34,8 +36,9 @@ public class SimpleMapActivity extends BaseMapActivity {
 		Map m = this.map();
 
 		Layers layers = mMap.layers();
-		//layers.add(new BuildingLayer(mMap, mBaseLayer));
+		layers.add(new BuildingLayer(mMap, mBaseLayer));
 		layers.add(new LabelLayer(mMap, mBaseLayer));
+		layers.add(new MapScaleBar(mMapView));
 
 		m.setTheme(VtmThemes.DEFAULT);
 	}

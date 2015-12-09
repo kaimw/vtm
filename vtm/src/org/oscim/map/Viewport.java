@@ -36,7 +36,7 @@ import org.oscim.utils.FastMath;
 public class Viewport {
 	//static final Logger log = LoggerFactory.getLogger(Viewport.class);
 
-	public final static int MAX_ZOOMLEVEL = 22;
+	public final static int MAX_ZOOMLEVEL = 20;
 	public final static int MIN_ZOOMLEVEL = 2;
 
 	public final static double MAX_SCALE = (1 << MAX_ZOOMLEVEL);
@@ -145,9 +145,6 @@ public class Viewport {
 	 * and the map plane
 	 */
 	protected float getDepth(float y) {
-		if (y == 0)
-			return 0;
-
 		// origin is moved by VIEW_DISTANCE
 		double cx = VIEW_DISTANCE;
 		// 'height' of the ray

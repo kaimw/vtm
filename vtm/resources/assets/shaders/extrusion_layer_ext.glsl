@@ -1,3 +1,6 @@
+#ifdef GLES
+precision highp float;
+#endif
 uniform mat4 u_mvp;
 uniform vec4 u_color[4];
 uniform int u_mode;
@@ -50,7 +53,7 @@ main(){
 $$
 
 #ifdef GLES
-precision mediump float;
+precision highp float;
 #endif
 varying vec4 color;
 void

@@ -23,6 +23,7 @@ import static org.oscim.layers.tile.MapTile.State.LOADING;
 import static org.oscim.layers.tile.MapTile.State.NEW_DATA;
 import static org.oscim.layers.tile.MapTile.State.NONE;
 import static org.oscim.layers.tile.MapTile.State.READY;
+import static org.oscim.utils.FastMath.clamp;
 
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -36,7 +37,6 @@ import org.oscim.layers.tile.MapTile.TileNode;
 import org.oscim.map.Map;
 import org.oscim.map.Viewport;
 import org.oscim.renderer.BufferObject;
-import org.oscim.utils.FastMath;
 import org.oscim.utils.ScanBox;
 import org.oscim.utils.quadtree.TileIndex;
 import org.slf4j.Logger;
@@ -99,13 +99,11 @@ public class TileManager {
 
 	private final float[] mMapPlane = new float[8];
 
-	private boolean mLoadParent = false;
+	private boolean mLoadParent;
 	private int mPrevZoomlevel;
 
-	//private final double mLevelUpThreshold = 1.15;
-	//private final double mLevelDownThreshold = 1.95;
-	private final double mLevelUpThreshold = 1;
-	private final double mLevelDownThreshold = 2;
+	private double mLevelUpThreshold = 1;
+	private double mLevelDownThreshold = 2;
 
 	private final TileIndex<TileNode, MapTile> mIndex =
 	        new TileIndex<TileNode, MapTile>() {
@@ -136,10 +134,10 @@ public class TileManager {
 		void onTileManagerEvent(Event event, MapTile tile);
 	};
 
-	public TileManager(Map map, int minZoom, int maxZoom, int cacheLimit) {
+	public TileManager(Map map, int cacheLimit) {
 		mMap = map;
-		mMaxZoom = maxZoom;
-		mMinZoom = minZoom;
+		mMaxZoom = 20;
+		mMinZoom = 0;
 		mCacheLimit = cacheLimit;
 		mCacheReduce = 0;
 
@@ -154,8 +152,17 @@ public class TileManager {
 		mUpdateSerial = 0;
 	}
 
-	public void setZoomTable(int[] zoomLevel) {
-		mZoomTable = zoomLevel;
+	public void setZoomTable(int[] zoomTable) {
+		mZoomTable = zoomTable;
+	}
+
+	/**
+	 * TESTING: avoid flickering when switching zoom-levels:
+	 * 1.85, 1.15 seems to work well
+	 */
+	public void setZoomThresholds(float down, float up) {
+		mLevelDownThreshold = clamp(down, 1, 2);
+		mLevelUpThreshold = clamp(up, 1, 2);
 	}
 
 	public MapTile getTile(int x, int y, int z) {
@@ -167,20 +174,22 @@ public class TileManager {
 	public void init() {
 		if (mCurrentTiles != null)
 			mCurrentTiles.releaseTiles();
-		/* pass VBOs and VertexItems back to pools */
+
+		mIndex.drop();
+
+		/* Pass VBOs and VertexItems back to pools */
 		for (int i = 0; i < mTilesEnd; i++) {
 			MapTile t = mTiles[i];
 			if (t == null)
 				continue;
 
-			if (!t.isLocked()) {
-				//log.debug("init clear {} {}", t, t.state());
+			/* Check if tile is used by another thread */
+			if (!t.isLocked())
 				t.clear();
-			}
-			mIndex.removeItem(t);
 
-			/* in case the tile is still loading:
-			 * clear when returned from loader */
+			/* In case the tile is still loading or used by
+			 * another thread: clear when returned from loader
+			 * or becomes unlocked */
 			t.setState(DEADBEEF);
 		}
 
@@ -231,29 +240,34 @@ public class TileManager {
 			return false;
 		}
 
-		int tileZoom = FastMath.clamp(pos.zoomLevel, mMinZoom, mMaxZoom);
-
-		//mLoadParent = pos.getZoomScale() < 1.5;
-
-		/* greater 1 when zoomed in further than current zoomlevel */
-		double scaleDiv = pos.scale / (1 << tileZoom);
-
-		mLoadParent = false;
+		int tileZoom = clamp(pos.zoomLevel, mMinZoom, mMaxZoom);
 
 		if (mZoomTable == null) {
-			/* positive when current zoomlevel is greater than previous */
+			/* greater 1 when zoomed in further than
+			 * tile zoomlevel, so [1..2] while whithin
+			 * min/maxZoom */
+			double scaleDiv = pos.scale / (1 << tileZoom);
+			mLoadParent = scaleDiv < 1.5;
+
 			int zoomDiff = tileZoom - mPrevZoomlevel;
 			if (zoomDiff == 1) {
-				/* dont switch zoomlevel if */
-				if (scaleDiv < mLevelUpThreshold)
+				/* dont switch zoomlevel up yet */
+				if (scaleDiv < mLevelUpThreshold) {
 					tileZoom = mPrevZoomlevel;
+					mLoadParent = false;
+				}
 			} else if (zoomDiff == -1) {
-				mLoadParent = true;
-				/* dont switch zoomlevel if */
-				if (scaleDiv > mLevelDownThreshold)
+				/* dont switch zoomlevel down yet */
+				if (scaleDiv > mLevelDownThreshold) {
 					tileZoom = mPrevZoomlevel;
+					mLoadParent = true;
+				}
 			}
+			//	log.debug("p:{} {}:{}=>{} | {} <> {}", mLoadParent,
+			//	          mPrevZoomlevel, pos.zoomLevel, tileZoom,
+			//	          scaleDiv, (pos.scale / (1 << tileZoom)));
 		} else {
+			mLoadParent = false;
 			int match = 0;
 			for (int z : mZoomTable) {
 				if (z <= tileZoom && z > match)
@@ -264,7 +278,6 @@ public class TileManager {
 
 			tileZoom = match;
 		}
-		//log.debug("{}|{}|{}|{}", mLoadParent, mPrevZoomlevel, pos.zoomLevel, scaleDiv);
 		mPrevZoomlevel = tileZoom;
 
 		mViewport.getMapExtents(mMapPlane, Tile.SIZE / 2);
@@ -591,7 +604,6 @@ public class TileManager {
 				mTilesToUpload++;
 				return;
 			}
-
 			// TODO use mMap.update(true) to retry tile loading?
 			log.debug("Load: {} {} state:{}",
 			          tile, success ? "success" : "failed",

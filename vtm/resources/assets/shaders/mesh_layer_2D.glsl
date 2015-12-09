@@ -1,5 +1,5 @@
 #ifdef GLES
-precision mediump float;
+precision highp float;
 #endif
 uniform mat4 u_mvp;
 uniform float u_height;
@@ -12,7 +12,7 @@ main(){
 $$
 
 #ifdef GLES
-precision mediump float;
+precision highp float;
 #endif
 uniform vec4 u_color;
 void

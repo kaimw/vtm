@@ -1,5 +1,5 @@
 #ifdef GLES
-precision mediump float;
+precision highp float;
 #endif
 uniform mat4 u_mvp;
 attribute vec4 a_pos;
@@ -8,7 +8,7 @@ void main() {
 }
 $$
 #ifdef GLES
-precision mediump float;
+precision highp float;
 #endif
 uniform vec4 u_color;
 void main() {
